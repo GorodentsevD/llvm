@@ -1,0 +1,28 @@
+FUNCTION D(b INT, a INT, c INT) INT BEGIN
+    LET res INT = b * b - 4 * a * c
+    RETURN res
+END
+
+FUNCTION main() INT BEGIN
+    LET a INT = 5
+    LET flag INT = 1
+    PRINT("A: ")
+    WHILE a < 11 BEGIN
+        IF flag == 1 BEGIN
+            PRINT(a)
+        END ELSE BEGIN
+            a = a + 2
+        END
+         a = a + 1
+    END
+
+    FOR ; a >=0; a = a + 1 BEGIN
+        PRINT(a)
+    END
+
+    PRINT("RESULT:")
+    PRINT(D(10, a, 1))
+
+    RETURN 0
+END
+

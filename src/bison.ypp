@@ -1,0 +1,300 @@
+%{ /* Объявления С++ */
+#include "ast.hpp"
+#include "statement.hpp"
+
+#include "llvm/IR/Value.h"
+#include "llvm/IR/IRBuilder.h"
+#include "llvm/IR/Verifier.h"
+#include "llvm/IR/LLVMContext.h"
+
+#include <iostream>
+#include <string>
+#include <cstdlib>
+
+
+extern FILE* yyin;
+
+void yyerror(std::string msg) {
+    std::cerr << msg << std::endl;
+    exit(EXIT_FAILURE);
+}
+
+/*
+    Функция лексического анализатора yylex распознаёт лексемы во входном потоке и передаёт их анализатору.
+    Bison не создаёт эту функцию автоматически, вы должны написать её так, чтобы yyparse могла вызывать её.
+    Эту функцию иногда называют лексическим сканером.
+*/
+extern int yylex();
+
+%} /* объявления BISON */
+
+/* набор типов значений */
+%union {
+    std::string* string_value;
+    int int_value;
+    Expression* expr_t;
+    llvm::Function* func_t;
+    std::vector<std::string>* str_vec;
+    std::vector<Expression*>* expr_vec;
+    VarType type_t;
+    Param* param_t;
+    std::vector<Param*>* param_vec;
+    Statement* statement_t;
+    std::vector<Statement*>* statement_vec;
+    FunctionAST* func_ast_t;
+    FunctionPrototypeAST* func_proto_ast_t;
+    ExpressionStatement* expr_stat_t;
+    FunctionCallExpression* call_expr_ast_t;
+    VarDeclarationStatement* var_decl_stat_t;
+}
+/* операции без приоритета */
+%nonassoc '='
+%nonassoc else_token
+
+/* приоритет по левой операции */
+%left orl_token
+%left andl_token
+%left '>' '<' ge_token le_token eq_token ne_token
+%left '+' '-'
+%left '*' '/'
+
+/* приоритет по правой операции */
+%right notl_token
+
+%token var_token fun_token return_token if_token else_token print_token
+%token orl_token andl_token notl_token do_token while_token for_token
+%token int_type_token string_type_token
+%token <string_value> id_token
+
+%token <int_value> int_token
+%token <double_value> double_token
+
+%token <string_value> str_token
+
+%token begin_block_token end_block_token
+
+%type <expr_t> E
+%type <param_t> Param
+%type <type_t> VarType
+%type <param_vec> ParamArray
+%type <expr_vec> ArgArray
+%type <func_ast_t> FunctionDefStatement
+%type <func_proto_ast_t> FunctionSignature
+%type <expr_stat_t> ExpressionStatement
+%type <statement_t> Statement DeclareAndAssignStatement AssignStatement
+%type <statement_t> IfElseStatement IfStatement WhileStatement ForStatement
+%type <statement_vec> StatementList Block
+%type <var_decl_stat_t> VarDeclarationStatement
+
+%% /* ПРАВИЛА ГРАММАТИКИ */
+Program: StatementList {
+    for (Statement* statement : *$1) {
+        statement->print();
+        statement->codegen();
+    }
+    delete $1;
+}
+
+StatementList: StatementList StatementSeparator Statement {
+    $$ = $1;
+    $$->push_back($3);
+    }
+    | Statement {
+        $$ = new std::vector<Statement*>();
+        $$->push_back($1);
+    }
+    ;
+
+StatementSeparator: ';' | '\n' ;
+
+Block: begin_block_token StatementList end_block_token {
+    $$ = $2;
+}
+
+Statement:
+    print_token E {
+      $$ = new PrintStatement($2);
+    }
+    | AssignStatement {
+          $$ = $1;
+        }
+    | VarDeclarationStatement {
+      $$ = $1;
+    }
+    | DeclareAndAssignStatement {
+      $$ = $1;
+    }
+    | FunctionDefStatement {
+       $$ = $1;
+    }
+    | ExpressionStatement {
+       $$ = $1;
+    }
+    | return_token E {
+       $$ = new ReturnStatement($2);
+    }
+    | IfStatement {
+        $$ = $1;
+    }
+    | IfElseStatement {
+        $$ = $1;
+    }
+    | ForStatement {
+        $$ = $1;
+    }
+    | WhileStatement {
+        $$ = $1;
+    }
+    | {
+        $$ = new EmptyStatement();
+    }
+    ;
+
+DeclareAndAssignStatement: VarDeclarationStatement '=' E {
+    std::string id = $1->getId();
+    auto assign_statement = new AssignStatement(id, $3);
+    $$ = new DeclareAndAssignStatement($1, assign_statement);
+};
+
+VarDeclarationStatement: var_token id_token VarType {
+    $$ = new VarDeclarationStatement(*$2, $3);
+    delete $2;
+}
+
+AssignStatement: id_token '=' E {
+    $$ = new AssignStatement(*$1, $3);
+    delete $1;
+}
+
+FunctionDefStatement: FunctionSignature Block {
+    $$ = new FunctionAST($1, *$2);
+    delete $2;
+}
+
+ExpressionStatement: E {
+    $$ = new ExpressionStatement($1);
+}
+
+FunctionSignature: fun_token id_token '(' ParamArray ')' VarType {
+    $$ = new FunctionPrototypeAST(*$2, *$4, $6);
+    delete $2;
+    delete $4;
+}
+
+IfStatement: if_token E Block {
+    $$ = new IfStatement($2, $3);
+}
+
+IfElseStatement: if_token E Block else_token Block {
+    $$ = new IfStatement($2, $3, $5);
+}
+
+WhileStatement: while_token E Block {
+    $$ = new WhileStatement($2, $3);
+}
+
+ForStatement: for_token Statement ';' E ';' Statement Block {
+    $$ = new ForStatement($2, $4, $6, $7);
+}
+
+E:
+  E '+' E {
+    $$ = new MathBinaryExpression($1, '+', $3);
+  }
+  | E '-' E {
+    $$ = new MathBinaryExpression($1, '-', $3);
+  }
+  | E '*' E {
+    $$ = new MathBinaryExpression($1, '*', $3);
+  }
+  | E '/' E {
+    $$ = new MathBinaryExpression($1, '/', $3);
+  }
+  | E '<' E {
+    $$ = new LogicBinaryExpression($1, LogicOperator::LESS, $3);
+  }
+  | E '>' E {
+    $$ = new LogicBinaryExpression($1, LogicOperator::GREATER, $3);
+  }
+  | E le_token E {
+    $$ = new LogicBinaryExpression($1, LogicOperator::LESS_EQUAL, $3);
+  }
+  | E ge_token E {
+    $$ = new LogicBinaryExpression($1, LogicOperator::GREATER_EQUAL, $3);
+  }
+  | E eq_token E {
+    $$ = new LogicBinaryExpression($1, LogicOperator::EQUAL, $3);
+  }
+  | E ne_token E {
+    $$ = new LogicBinaryExpression($1, LogicOperator::NOT_EQUAL, $3);
+  }
+  | E andl_token E {
+    $$ = new AndExpression($1, $3);
+  }
+  | E orl_token E {
+    $$ = new OrExpression($1, $3);
+  }
+  | notl_token E {
+    $$ = new NotLExpression($2);
+  }
+  | '(' E ')' {
+    $$ = $2;
+  }
+  | id_token {
+    $$ = new IdentifierExpression(*$1);
+    delete $1;
+  }
+  | int_token {
+    $$ = new Literal($1);
+  }
+  | str_token {
+    $$ = new Literal(*$1);
+    delete $1;
+  }
+  | id_token '(' ArgArray ')' {
+    $$ = new FunctionCallExpression(*$1, *$3);
+    delete $1;
+    delete $3;
+  };
+
+ArgArray: 
+    ArgArray ',' E {
+        $$ = $1;
+        $$->push_back($3);
+    }
+  | E {
+    $$ = new std::vector<Expression*>();
+    $$->push_back($1);
+  }
+  | {
+    $$ = new std::vector<Expression*>();
+  }
+  ;
+
+ParamArray:
+    ParamArray ',' Param {
+        $$ = $1;
+        $$->push_back($3);
+    }
+    | Param {
+        $$ = new std::vector<Param*>();
+        $$->push_back($1);
+    }
+    | {
+        $$ = new std::vector<Param*>();
+    }
+
+Param: id_token VarType {
+    $$ = new Param(*$1, $2);
+    delete $1;
+}
+
+VarType: int_type_token {
+        $$ = VarType::INT;
+    }
+    | string_type_token {
+        $$ = VarType::STRING;
+    };
+
+%%
+
